@@ -25,3 +25,41 @@
                     |        v              |
                     |  MySQL (Database)     |  :3306 (local only)
                     +----------------------+
+
+User types https://www.foobar.com/ in the browser.
+
+Browser resolves www.foobar.com → DNS returns A record pointing to 8.8.8.8.
+
+Browser opens TCP to 8.8.8.8 on port 80 (HTTP) or 443 (HTTPS).
+
+Nginx receives the request, serves static assets directly (if any) and proxies dynamic requests to the application server on localhost (e.g., 127.0.0.1:8000 or a UNIX socket).
+
+The application server runs your application code, which may query MySQL for data.
+
+App server returns a response to Nginx → Nginx returns it to the user.
+
+What each component is doing
+
+Server: A physical or virtual machine (compute + OS) running your services (Nginx, app server, MySQL, your code).
+
+Domain name: Human-readable name that maps to an IP. Lets users find your server without memorizing IPs.
+
+DNS record type for www: A record pointing www.foobar.com → 8.8.8.8 (as required here).
+
+Web server (Nginx): Terminates HTTP/HTTPS, serves static files, reverse-proxies to the app server, handles buffering, gzip, TLS, etc.
+
+Application server: Executes your app code (Python/Node/Ruby/…); keeps workers/processes alive to handle dynamic requests efficiently.
+
+Application files: Your codebase (routes, templates, business logic, static assets).
+
+Database (MySQL): Persists data; the app server queries it (reads/writes) typically over a local socket/TCP.
+
+How the server communicates with the user’s computer: Via HTTP (TCP/80) or HTTPS (TLS over TCP/443).
+
+Issues with this single-server design
+
+SPOF (Single Point of Failure): If the server dies or Nginx/MySQL crashes, the entire site is down.
+
+Downtime for maintenance/deploys: Restarting Nginx/app server or applying DB upgrades can interrupt service.
+
+Cannot scale: One machine caps CPU/RAM/I/O. Traffic spikes will degrade performance or cause outages.
