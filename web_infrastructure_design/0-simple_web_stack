@@ -1,0 +1,27 @@
++------------------------- Internet -------------------------+
+|                                                            |
+|  User’s Browser                                            |
+|      | 1) DNS query: www.foobar.com                        |
+|      v                                                      |
+|  DNS (authoritative for foobar.com)                        |
+|      | 2) Answer: www → A → 8.8.8.8                        |
+|      v                                                      |
+|  TCP connection to 8.8.8.8:80/443                          |
++------------------------------|-----------------------------+
+                               v
+                    +----------------------+
+                    |  Single Server       |   IP: 8.8.8.8
+                    |  (Ubuntu, etc.)      |
+                    |                      |
+   HTTP(S) <->      |  Nginx (Web Server)  |  :80 / :443
+ Reverse proxy      |        |              |
+ to app server      |        v              |
+ localhost socket   |  App Server           |  e.g., Gunicorn/uWSGI/Node
+ or TCP (127.0.0.1) |  (runs your code)     |  :8000
+                    |        |              |
+                    |        v              |
+                    |  Application Files    |  your codebase
+                    |        |              |
+                    |        v              |
+                    |  MySQL (Database)     |  :3306 (local only)
+                    +----------------------+
