@@ -1,0 +1,111 @@
+                  Internet / DNS (www.foobar.com)
+                               |
+                               v
+                     [Server A] HAProxy (LB)
+                           Public IP
+                             |
+               -----------------------------
+               |                           |
+               v                           v
+ [Server B] Nginx -> App Server -> Code     [Server C] Nginx -> App Server -> Code
+   MySQL (Primary / Master)                   MySQL (Replica / Slave)
+
+                 <--- Asynchronous MySQL replication ---
+
+
+Why each element is added
+
+HAProxy load balancer (Server A):
+Distributes traffic across backends to improve availability and capacity; central point for health checks, timeouts, routing, rate limiting, and (ideally) TLS termination (HTTPS).
+
+Two web/app servers (Servers B & C):
+
+Nginx: reverse proxy, serves static files, gzip compression, keep-alive; forwards dynamic requests to the application server.
+
+Application server (e.g., Gunicorn/uWSGI/PM2): runs the application code efficiently with worker processes.
+
+Code base: the application itself, deployed via CI/CD to keep nodes synchronized.
+→ Two nodes remove the single-host bottleneck and allow easier maintenance with less impact.
+
+MySQL on each app node (Primary on B, Replica on C):
+The Primary-Replica model improves read scalability and provides a standby for failover. Data remains accessible with low latency while staying synchronized through replication.
+
+Load balancer algorithm & operation
+
+Chosen algorithm: Round-robin with health checks.
+HAProxy distributes requests in turn across healthy servers (B → C → B → C …).
+If a server fails (e.g., /healthz ≠ 200), HAProxy stops sending traffic to it until it recovers.
+
+Possible improvements:
+
+leastconn: sends traffic to the server with the fewest active connections (useful when request costs vary).
+
+Sticky sessions (via cookie) only if necessary; better to keep the application stateless.
+
+Active-Active vs Active-Passive
+
+Current design: Active-Active at the application tier — both B and C receive traffic at the same time.
+
+Active-Active: multiple nodes handle traffic simultaneously → better capacity and resilience (if one node fails, capacity drops but service stays available).
+
+Active-Passive: one node serves traffic, the other stays on standby and only takes over if the first fails → simpler to manage but wastes capacity and requires a failover.
+
+How a MySQL Primary-Replica cluster works
+
+Primary (Server B): handles all writes (INSERT/UPDATE/DELETE, DDL) and records changes in the binlog.
+
+Replica (Server C): runs an I/O thread to fetch binlogs from the Primary and a SQL thread to apply them. Replication is typically asynchronous, so the Replica may have some lag.
+
+Usage:
+
+Writes → always on the Primary.
+
+Reads → can be offloaded to the Replica to share the load, as long as the app tolerates eventual consistency.
+
+Difference between Primary and Replica from the application’s perspective
+
+Primary: authoritative for writes; guarantees immediate consistency (read-your-write).
+
+Replica: read-only; may be slightly delayed → useful for non-critical reads (e.g., listings, analytics).
+⚠️ Do not read from the Replica immediately after a write if strict freshness is required.
+
+Issues with this infrastructure
+Single Points of Failure (SPOF)
+
+HAProxy (Server A): if it fails, the whole site is unreachable.
+→ Solution: add a second LB (active-active with anycast/ECMP or active-passive with VRRP/keepalived).
+
+MySQL Primary: SPOF for writes.
+→ Solution: automated failover (Orchestrator/ProxySQL), semi-synchronous replication, or managed HA databases.
+
+DNS: SPOF if only one provider is used.
+→ Solution: multiple DNS providers, low TTL, health-checked records.
+
+Security issues
+
+No firewall: services too exposed.
+→ Solution: expose only 80/443 on the LB, SSH via bastion/VPN, app and DB ports restricted to the private network.
+
+No HTTPS/TLS: traffic is unencrypted.
+→ Solution: TLS at the LB (Let’s Encrypt), optionally TLS internally as well.
+
+No secrets management: DB passwords stored in code or on disk.
+→ Solution: environment variables + secrets manager; regular rotation.
+
+DB on same host as app: larger attack surface if host is compromised.
+→ Solution: isolate the DB, bind to private IP, least-privilege users, disable remote root login.
+
+Lack of monitoring
+
+No metrics, alerts, centralized logs, backups, or CI/CD.
+→ Solution: monitoring (Prometheus/Grafana), centralized logs (ELK, Loki), distributed tracing (OpenTelemetry), tested backups (daily + binlogs), and CI/CD with config as code (Ansible/Terraform).
+
+Quick summary
+
+Load balancer: availability, scalability, health checks.
+
+2× Nginx + App + Code: horizontal scalability, maintenance with reduced impact, separation of static/dynamic.
+
+MySQL Primary-Replica: safe writes on Primary, optional read offloading on Replica, base for failover.
+
+Trade-offs: still SPOFs (LB, Primary), security gaps, no monitoring → not yet production-ready.
