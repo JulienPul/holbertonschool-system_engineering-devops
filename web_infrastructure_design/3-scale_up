@@ -1,0 +1,85 @@
+                 Internet / DNS (www.foobar.com)
+                               |
+                     +--------------------+
+                     |  Virtual IP (VIP)  |  <= shared via VRRP/keepalived
+                     +----------+---------+
+                                |
+                 ------------------------------- 
+                 |                             |
+                 v                             v
+        [LB1] HAProxy                   [LB2] HAProxy
+        (Active)                         (Standby)
+        - TLS termination                - TLS termination
+        - Health checks                  - Health checks
+                \                         /
+                 \                       /
+                  \----- private network /
+                           |
+                           v
+                    [Web Server] Nginx
+                  (static, reverse proxy)
+                           |
+                           v
+                 [App Server] Application server
+                 (e.g., Gunicorn/uWSGI/PM2)
+                           |
+                           v
+                   [DB Server] MySQL
+
+
+What’s added for this task
+
+One extra server so each component (web, app, DB) runs on its own host (role separation).
+
+A second HAProxy configured in a cluster with the first one (VIP via VRRP/keepalived).
+
+Why each additional element is added
+
+Second load balancer (HAProxy) clustered with the first (VIP):
+Removes the load balancer single point of failure. If LB1 fails, LB2 immediately takes over the virtual IP and continues to terminate TLS, run health checks, and distribute traffic to the web tier. This gives seamless failover and higher availability at the edge.
+
+One more server to split roles (Web, App, DB on separate hosts):
+
+Performance isolation: database I/O no longer competes with app CPU or Nginx buffering.
+
+Security boundaries: different firewall rules per tier; smaller blast radius.
+
+Independent scaling: scale the App Server when QPS grows; scale the DB Server when write load/storage grows; tune Nginx separately for static content and reverse proxying.
+
+Application server vs Web server
+
+Web server (Nginx):
+
+Terminates HTTP (and can proxy HTTPS from the LB if re-encrypted).
+
+Serves static assets efficiently (cache, sendfile, gzip, keep-alive).
+
+Acts as a reverse proxy that forwards dynamic requests to the application server.
+
+Application server (Gunicorn/uWSGI/PM2/etc.):
+
+Runs your business logic/codebase.
+
+Manages workers/threads, application lifecycle, graceful reloads/timeouts.
+
+Interfaces with the database and other backends.
+
+Why the split matters: Nginx is optimized for network I/O and static delivery; the application server is optimized for executing code. Separating them yields better performance, clearer tuning knobs, and cleaner scaling.
+
+Load-balancing specifics
+
+Algorithm: Round-robin (with active health checks).
+HAProxy cycles requests across healthy backends. Unhealthy nodes (failing /healthz or TCP checks) are removed until they recover.
+
+LB failover mode: Active-Passive at the load-balancer layer using VRRP/keepalived with a VIP that floats between LB1 and LB2.
+The web/app layer remains Active-Active (multiple workers/instances can serve concurrently behind Nginx/app).
+
+Summary (talk-track)
+
+We added a second HAProxy and clustered it with the first via VRRP to eliminate the LB SPOF.
+
+We added one server and split roles so Web, App, and DB each run on their own machine.
+
+Web server (Nginx) handles static content and reverse proxy; Application server runs the code; DB is isolated for performance and security.
+
+Result: higher availability, clear boundaries, and independent scaling per tier.
