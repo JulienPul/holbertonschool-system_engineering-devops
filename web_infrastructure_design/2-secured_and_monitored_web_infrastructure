@@ -1,0 +1,173 @@
+                 Internet / DNS (www.foobar.com)
+                               |
+                        [Firewall #1]
+                               |
+                               v
+                     [Server A] HAProxy (LB)
+                        - Public IP
+                        - SSL/TLS cert for www.foobar.com
+                        - Monitoring client
+                               |
+                        [Firewall #2]
+                ---------------+----------------
+                |                               |
+                v                               v
+ [Server B] Nginx -> App Server -> Code   [Server C] Nginx -> App Server -> Code
+   - MySQL (Primary or Replica)             - MySQL (Replica or Primary*)
+   - Monitoring client                      - Monitoring client
+                \                               /
+                 \----- MySQL async replication /
+                          (Primary -> Replica)
+
+                        ^
+                        |
+                   [Firewall #3]
+                (DB subnet isolation)
+
+
+Notes:
+• HTTPS terminates at the load balancer (can optionally re-encrypt to backends).
+• Each host also enforces a host firewall (default-deny).
+• Monitoring clients run on all three servers and ship logs/metrics to a SaaS (e.g., Sumo Logic).
+
+Added elements and why they are included
+3 Firewalls
+
+Firewall #1 (Edge): Only allows TCP 80/443 to the LB’s public IP (and 80 only for HTTP→HTTPS redirect). Blocks everything else from the Internet.
+
+Firewall #2 (App tier): Only allows traffic from the LB private IP to Nginx/app ports (e.g., 80/8080). Blocks east-west traffic from arbitrary sources.
+
+Firewall #3 (DB tier): Only allows MySQL (3306) from the app servers’ private IPs. No direct Internet access to DBs.
+
+Purpose (in general): Firewalls enforce least privilege network access, reduce blast radius, and stop unsolicited connections.
+
+1 SSL certificate for www.foobar.com
+
+Enables HTTPS on the LB so user traffic is encrypted in transit, protecting credentials, cookies, and sensitive data from eavesdropping or tampering. Also enables HSTS and modern TLS to prevent downgrade/MI attacks.
+
+3 Monitoring clients (one per server)
+
+Lightweight agents (e.g., Sumo Logic Installed Collector, or other) that collect system metrics (CPU/RAM/disk), service metrics (HAProxy/Nginx/MySQL), and logs (access/error/app).
+
+They ship data securely over TLS to a central platform for dashboards, alerts, anomaly detection, and incident response.
+
+What each security/monitoring concept is for
+
+Firewalls: Control which IPs/ports/protocols are allowed. Typical rules here:
+
+Internet → LB: allow 80/443 only.
+
+LB → App: allow 80/8080 only from LB IP.
+
+App → DB: allow 3306 only from app servers’ IPs.
+
+SSH: only via VPN/bastion, restrict by source and key.
+
+Why HTTPS: Encrypts client↔server traffic, ensures integrity, and provides server authentication via certificates. Prevents sniffing and session/cookie theft on untrusted networks.
+
+What monitoring is used for: Visibility and reliability—track health, performance, errors, security events; trigger alerts before users are impacted; support capacity planning and post-incident analysis.
+
+How the monitoring tool collects data:
+
+Logs: tail Nginx/HAProxy access & error logs, app logs, MySQL logs; forward to SaaS via TLS.
+
+Metrics: scrape or read exporters/endpoints (e.g., HAProxy stats socket/endpoint, Nginx stub_status), OS metrics, and DB replication lag.
+
+Traces (optional): app emits OpenTelemetry spans for end-to-end latency analysis.
+
+How to monitor web server QPS (queries/requests per second)
+
+Define QPS as HTTP requests per second.
+
+Enable an endpoint/exporter:
+
+Nginx: enable stub_status and have the agent collect requests/conn stats, or parse access logs and compute RPS.
+
+HAProxy: enable stats or Prometheus exporter to get frontend/backend request rates.
+
+In the monitoring tool:
+
+Create a metric (e.g., nginx.requests_per_second or haproxy.frontend_http_req_rate).
+
+Dashboard: line chart of QPS per node and total.
+
+Alerts: threshold (e.g., sudden drop to 0 or spike above capacity) and anomaly detection.
+
+Issues/risks in this secure & monitored design
+1) SSL termination only at the load balancer
+
+Issue: Traffic from LB → app servers is in plaintext HTTP on the private network. A compromised host or misconfigured network could sniff or tamper with traffic.
+
+Mitigations:
+
+Re-encrypt: use HTTPS from LB to Nginx (backend certs, optional mTLS).
+
+Network segmentation + firewalling + IDS.
+
+Rotate and manage certificates properly.
+
+2) Only one MySQL server accepting writes
+
+Issue: The Primary is a SPOF for writes. If it fails, the app can’t write until failover. Also, maintenance on the Primary implies write downtime.
+
+Mitigations:
+
+Automated failover (e.g., Orchestrator/ProxySQL) with promotion of the Replica.
+
+Semi-synchronous replication to reduce data loss risk.
+
+Consider managed HA DB or multi-AZ deployment.
+
+3) Servers with all the same components (DB + web + app)
+
+Issue: Mixing roles increases blast radius (compromise of one host hits web+app+DB), causes resource contention, complicates scaling (you may want to scale app but not DB), and blurs responsibilities.
+
+Mitigations:
+
+Separate tiers (stateless web/app nodes; dedicated DB nodes).
+
+Principle of least privilege per tier; harden each layer.
+
+Use configuration management and CI/CD to keep roles reproducible.
+
+Concrete port policy (example)
+
+Firewall #1 (Edge): Allow TCP 80/443 → LB; deny all else.
+
+Firewall #2 (App): Allow from LB private IP → app servers (80/8080); deny all else.
+
+Firewall #3 (DB): Allow from app servers’ IPs → 3306; deny all else.
+
+SSH: only from bastion/VPN IPs → 22 on each host (or via SSM-like access).
+
+Egress: restrict outbound where possible; allow monitoring agent egress to SaaS endpoints over TLS.
+
+TLS details (recommended)
+
+TLS 1.2/1.3 only, strong ciphers, OCSP stapling, HSTS (with preload when confident), automatic certificate renewal (e.g., ACME).
+
+Consider backend re-encryption (HTTPS LB→Nginx) and mTLS on internal paths that carry sensitive data.
+
+Monitoring signals to collect (minimum)
+
+LB/HTTP: 2xx/4xx/5xx rates, p50/p95/p99 latency, QPS, backend health, retries.
+
+Nginx/App: QPS per route, upstream errors/timeouts, saturated workers.
+
+DB: replication lag, slow queries, QPS, connections, buffer pool, disk I/O.
+
+Host: CPU, memory, disk, inode, network, process restarts.
+
+Security: auth failures, firewall drops, file integrity (optional).
+
+Quick rationale
+
+Firewalls provide layered network defense.
+
+HTTPS protects users and data integrity.
+
+Monitoring gives real-time visibility and alerting.
+
+LB + two app servers deliver availability and scale.
+
+Primary-Replica DB supports reads and failover (with the caveat of write SPOF if only one writer).
